@@ -16,12 +16,16 @@ fn make_wallet() -> Result<PrivateKeySigner> {
 }
 
 pub fn make_provider() -> Result<impl Provider<Ethereum>> {
+    tracing::trace!("Creating provider with RPC_URL from environment");
     let rpc_url = std::env::var(ETH_RPC_URL)?;
+    tracing::trace!("RPC URL: {}", rpc_url);
     let wallet = make_wallet()?;
+    tracing::trace!("Wallet address: {}", wallet.address());
     let provider = ProviderBuilder::new()
         .wallet(wallet)
         .with_chain_id(CHAIN_ID)
         .connect_http(Url::parse(&rpc_url)?);
+    tracing::trace!("Provider created successfully with chain_id: {}", CHAIN_ID);
     Ok(provider)
 }
 

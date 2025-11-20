@@ -28,34 +28,46 @@ pub struct BalanceResponse {
 }
 
 pub async fn get_balance(wallet_address: String, token: Option<String>) -> Result<BalanceResponse> {
+    tracing::trace!("Parsing wallet address: {}", wallet_address);
     let wallet_address = Address::from_str(&wallet_address)
         .context(format!("Invalid wallet address: {}", wallet_address))?;
+    
+    tracing::trace!("Creating provider");
     let provider = make_provider()?;
 
     match token {
         None => {
+            tracing::debug!("Fetching ETH balance for address: {}", wallet_address);
             let balance = provider
                 .get_balance(wallet_address)
                 .await
                 .context("Failed to get ETH balance")?;
+            tracing::trace!("ETH balance retrieved: {} wei", balance);
             Ok(BalanceResponse {
                 balance: u256_to_decimal(balance, 18)?,
             })
         }
         Some(token_str) => {
+            tracing::debug!("Fetching {} balance for address: {}", token_str, wallet_address);
             let token_address = resolve_token(&token_str).await?;
+            tracing::trace!("Token resolved to address: {}", token_address);
+            
             let contract = IERC20::new(token_address, &provider);
 
+            tracing::trace!("Fetching token decimals");
             let decimals = contract
                 .decimals()
                 .call()
                 .await
                 .context("Failed to call decimals")?;
+            tracing::trace!("Token decimals: {}", decimals);
+            
             let balance = contract
                 .balanceOf(wallet_address)
                 .call()
                 .await
                 .context("Failed to call balanceOf")?;
+            tracing::trace!("Token balance retrieved: {} (raw)", balance);
 
             Ok(BalanceResponse {
                 balance: u256_to_decimal(balance, decimals)?,

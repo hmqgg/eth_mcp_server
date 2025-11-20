@@ -61,32 +61,41 @@ pub async fn swap_tokens(
     amount_from: String,
     slippage_percent: String,
 ) -> Result<SwapResponse> {
+    tracing::trace!("Creating provider");
     let provider = make_provider()?;
 
+    tracing::debug!("Resolving tokens: {} -> {}", from_token, to_token);
     let from_token_addr = resolve_token(&from_token).await?;
     let to_token_addr = resolve_token(&to_token).await?;
+    tracing::trace!("From token address: {}, To token address: {}", from_token_addr, to_token_addr);
 
     let from_contract = IERC20::new(from_token_addr, &provider);
     let to_contract = IERC20::new(to_token_addr, &provider);
 
+    tracing::trace!("Fetching token decimals");
     let (from_decimals, to_decimals) =
         tokio::try_join!(async { from_contract.decimals().call().await }, async {
             to_contract.decimals().call().await
         },)
         .context("Failed to fetch token decimals")?;
+    tracing::trace!("From decimals: {}, To decimals: {}", from_decimals, to_decimals);
 
     // Convert amount_from (string) to Decimal, then to U256
+    tracing::trace!("Parsing input amount: {}", amount_from);
     let amount_from_decimal =
         Decimal::from_str(&amount_from).context(format!("Invalid amount_from: {}", amount_from))?;
 
     // Convert to U256, using the helper function
     let amount_from_u256 = decimal_to_u256(amount_from_decimal, from_decimals)?;
+    tracing::trace!("Input amount in U256: {}", amount_from_u256);
 
     // Move quoter outside of swap_tokens function to make it clear.
     // Use Quoter to find the best fee tier and estimate the output
+    tracing::debug!("Finding best fee tier for swap {} -> {}", from_token, to_token);
     let (best_fee, best_amount_out) =
         get_best_fee_and_amount_out(from_token_addr, to_token_addr, amount_from_u256, &provider)
             .await?;
+    tracing::debug!("Selected fee tier: {:?}, estimated output: {}", best_fee, best_amount_out);
 
     // Calculate amountOutMinimum (considering slippage)
     let slippage = Decimal::from_str(&slippage_percent)?;
@@ -94,9 +103,11 @@ pub async fn swap_tokens(
     let amount_out_decimal = u256_to_decimal(best_amount_out, to_decimals)?;
     let min_decimal = amount_out_decimal * slippage_multiplier;
     let amount_out_minimum = decimal_to_u256(min_decimal, to_decimals)?;
+    tracing::trace!("Slippage: {}%, Min output: {}", slippage, amount_out_minimum);
 
     // Get wallet address for state override
     let wallet_addr = get_wallet_address()?;
+    tracing::trace!("Wallet address for simulation: {}", wallet_addr);
 
     // Use Router to simulate swap
     let router = UniswapV3Router::new(UNISWAP_V3_ROUTER_ADDRESS, &provider);
@@ -111,14 +122,17 @@ pub async fn swap_tokens(
         sqrtPriceLimitX96: Uint::ZERO,
     };
 
+    tracing::trace!("Creating state override for token: {}", from_token_addr);
     let state_override = create_token_state_override(from_token_addr, wallet_addr);
 
+    tracing::debug!("Simulating swap on Uniswap V3 Router");
     let gas_estimate = router
         .exactInputSingle(params.clone())
         .from(wallet_addr)
         .state(state_override.clone())
         .estimate_gas()
         .await?;
+    tracing::trace!("Gas estimate: {}", gas_estimate);
 
     let swap_result = router
         .exactInputSingle(params)
@@ -132,6 +146,7 @@ pub async fn swap_tokens(
         })?;
 
     let amount_out = swap_result;
+    tracing::debug!("Swap simulation successful, actual output: {}", amount_out);
 
     Ok(SwapResponse {
         amount_to: u256_to_decimal(amount_out, to_decimals)?,
@@ -145,11 +160,13 @@ async fn get_best_fee_and_amount_out(
     amount_from_u256: U256,
     provider: &impl Provider<Ethereum>,
 ) -> Result<(U24, U256)> {
+    tracing::trace!("Querying quoter for best fee tier");
     let quoter = UniswapV3Quoter::new(UNISWAP_V3_QUOTER_ADDRESS, &provider);
 
     let mut best_fee = None;
     let mut best_amount_out = U256::ZERO;
 
+    tracing::trace!("Testing fee tiers: {:?}", FEE_TIERS);
     for &fee in &FEE_TIERS {
         let fee_uint = Uint::<24, 1>::from_limbs([fee.into()]);
 
@@ -166,14 +183,19 @@ async fn get_best_fee_and_amount_out(
 
         if let Ok(quote) = result {
             let amount_out = quote;
+            tracing::trace!("Fee tier {}: quote = {}", fee, amount_out);
             if amount_out > best_amount_out {
                 best_amount_out = amount_out;
                 best_fee = Some(fee);
+                tracing::trace!("New best fee tier: {}", fee);
             }
+        } else {
+            tracing::trace!("Fee tier {}: no liquidity or error", fee);
         }
     }
 
     if best_fee.is_none() {
+        tracing::warn!("No liquidity found for pair {}/{} in any V3 pool", from_token_addr, to_token_addr);
         bail!(
             "No liquidity found for pair {}/{} in V3 pools",
             from_token_addr,

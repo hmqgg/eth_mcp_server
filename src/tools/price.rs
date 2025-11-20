@@ -33,27 +33,34 @@ pub struct PriceResponse {
 pub async fn get_token_price(token: String, currency: String) -> Result<PriceResponse> {
     let provider = make_provider()?;
 
+    tracing::debug!("Resolving token: {} and currency: {}", token, currency);
     let token_addr = resolve_token(&token).await?;
     let currency_addr = resolve_token(&currency).await?;
+    tracing::trace!("Token address: {}, Currency address: {}", token_addr, currency_addr);
 
     let token_contract = IERC20::new(token_addr, &provider);
     let currency_contract = IERC20::new(currency_addr, &provider);
 
+    tracing::trace!("Fetching decimals for token and currency");
     let (token_decimals, currency_decimals) =
         tokio::try_join!(async { token_contract.decimals().call().await }, async {
             currency_contract.decimals().call().await
         },)
         .context("Failed to fetch token/currency decimals")?;
+    tracing::trace!("Token decimals: {}, Currency decimals: {}", token_decimals, currency_decimals);
 
     // IMPORTANT: Set the input amount to 1 token (10^token_decimals).
     // So we do not need to divide by the token amount (and with decimals) in the final calculation.
     let amount_in_u256 = U256::from(10).pow(U256::from(token_decimals));
+    tracing::trace!("Query amount: {} (1 token)", amount_in_u256);
 
     let quoter = UniswapV3Quoter::new(UNISWAP_V3_QUOTER_ADDRESS, &provider);
 
     // Try all fee tiers and find the best price.
     let mut best_out = U256::ZERO;
+    let mut best_fee = None;
 
+    tracing::debug!("Querying Uniswap V3 quoter for {}/{}", token, currency);
     for &fee in &FEE_TIERS {
         let fee_uint = Uint::<24, 1>::from_limbs([fee.into()]);
 
@@ -70,19 +77,26 @@ pub async fn get_token_price(token: String, currency: String) -> Result<PriceRes
 
         if let Ok(quote) = result {
             let amount_out = quote;
+            tracing::trace!("Fee tier {}: quote = {}", fee, amount_out);
             if amount_out > best_out {
                 best_out = amount_out;
+                best_fee = Some(fee);
             }
+        } else {
+            tracing::trace!("Fee tier {}: no liquidity or error", fee);
         }
     }
 
     if best_out == U256::ZERO {
+        tracing::warn!("No liquidity found for pair {}/{} in any V3 pool", token, currency);
         bail!(
             "No liquidity found for pair {}/{} in V3 pools",
             token,
             currency
         );
     }
+
+    tracing::debug!("Best fee tier: {:?}, best quote: {}", best_fee, best_out);
 
     Ok(PriceResponse {
         price: u256_to_decimal(best_out, currency_decimals)?,

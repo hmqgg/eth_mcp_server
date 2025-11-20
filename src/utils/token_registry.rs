@@ -27,6 +27,7 @@ struct TokenList {
 async fn get_registry() -> Result<&'static HashMap<String, Address>> {
     TOKEN_REGISTRY
         .get_or_try_init(|| async {
+            tracing::debug!("Fetching token list from: {}", UNISWAP_TOKEN_LIST_URL);
             let client = reqwest::Client::new();
             let response = client
                 .get(UNISWAP_TOKEN_LIST_URL)
@@ -34,6 +35,7 @@ async fn get_registry() -> Result<&'static HashMap<String, Address>> {
                 .await
                 .context("Failed to fetch token list")?;
 
+            tracing::trace!("Parsing token list");
             let token_list: TokenList = response
                 .json()
                 .await
@@ -46,6 +48,8 @@ async fn get_registry() -> Result<&'static HashMap<String, Address>> {
                 }
             }
 
+            tracing::info!("Token registry initialized with {} tokens for chain {}", registry.len(), CHAIN_ID);
+
             Ok::<_, anyhow::Error>(registry)
         })
         .await
@@ -54,18 +58,20 @@ async fn get_registry() -> Result<&'static HashMap<String, Address>> {
 pub async fn resolve_token(token: &str) -> Result<Address> {
     // If the token is already an address, return it.
     if token.starts_with("0x") {
+        tracing::trace!("Token is already an address: {}", token);
         return Ok(Address::from_str(token)?);
     }
 
+    tracing::trace!("Fetching token registry");
     let registry = get_registry().await?;
     let symbol_upper = token.to_uppercase();
 
-    tracing::info!("Resolving token: {} -> {}", token, symbol_upper);
+    tracing::debug!("Resolving token symbol: {} -> {}", token, symbol_upper);
     let result = registry
         .get(&symbol_upper)
         .copied()
         .context(format!("Token symbol '{}' not found in registry", token))?;
-    tracing::info!("Resolved token: {} -> {}", token, result.to_string());
+    tracing::debug!("Resolved token: {} -> {}", token, result.to_string());
     Ok(result)
 }
 
