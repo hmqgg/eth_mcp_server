@@ -97,6 +97,8 @@ The server communicates with MCP clients via standard input/output (stdio).
 
 ### Testing with MCP Inspector
 
+*❤️ Recommended*
+
 Install and use the official MCP Inspector:
 
 ```bash
